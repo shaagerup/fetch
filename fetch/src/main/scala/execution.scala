@@ -26,5 +26,5 @@ private object FetchExecution {
   ): F[NonEmptyList[A]] =
     effects
       .traverse(CF.start(_))
-      .flatMap(fibers => fibers.traverse(_.join).onError({ case _ => fibers.traverse_(_.cancel) }))
+      .flatMap(fibers => fibers.traverse(_.joinWithNever).onError({ case _ => fibers.traverse_(_.cancel) }))
 }

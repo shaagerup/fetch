@@ -377,7 +377,7 @@ object `package` {
         for {
           deferred <- Deferred[F, FetchStatus]
           request        = FetchOne(id, ds.data)
-          result         = deferred.complete _
+          result         = (x: FetchStatus) => deferred.complete(x).void
           blocked        = BlockedRequest(request, CombinationLeaf(result))
           anyDs          = ds.asInstanceOf[DataSource[F, Any, Any]]
           blockedRequest = RequestMap(Map(ds.data.identity -> (anyDs, blocked)))
@@ -402,7 +402,7 @@ object `package` {
         for {
           deferred <- Deferred[F, FetchStatus]
           request        = FetchOne(id, ds.data)
-          result         = deferred.complete _
+          result         = (x: FetchStatus) => deferred.complete(x).void
           blocked        = BlockedRequest(request, CombinationLeaf(result))
           anyDs          = ds.asInstanceOf[DataSource[F, Any, Any]]
           blockedRequest = RequestMap(Map(ds.data.identity -> (anyDs, blocked)))
@@ -442,7 +442,7 @@ object `package` {
           fa: Fetch[F, A]
       )(implicit
           C: Concurrent[F],
-          T: Temporal[F]
+          T: Clock[F]
       ): F[A] =
         apply(fa, InMemoryCache.empty[F])
 
@@ -451,7 +451,7 @@ object `package` {
           cache: DataCache[F]
       )(implicit
           C: Concurrent[F],
-          T: Temporal[F]
+          T: Clock[F]
       ): F[A] =
         for {
           cache  <- ref[F, DataCache[F]](cache)
@@ -469,7 +469,7 @@ object `package` {
           fa: Fetch[F, A]
       )(implicit
           C: Concurrent[F],
-          T: Temporal[F]
+          T: Clock[F]
       ): F[(Log, A)] =
         apply(fa, InMemoryCache.empty[F])
 
@@ -478,7 +478,7 @@ object `package` {
           cache: DataCache[F]
       )(implicit
           C: Concurrent[F],
-          T: Temporal[F]
+          T: Clock[F]
       ): F[(Log, A)] =
         for {
           logAndCache <- (ref[F, Log](FetchLog()), ref[F, DataCache[F]](cache)).tupled
@@ -498,7 +498,7 @@ object `package` {
           fa: Fetch[F, A]
       )(implicit
           C: Concurrent[F],
-          T: Temporal[F]
+          T: Clock[F]
       ): F[(DataCache[F], A)] =
         apply(fa, InMemoryCache.empty[F])
 
@@ -507,7 +507,7 @@ object `package` {
           cache: DataCache[F]
       )(implicit
           C: Concurrent[F],
-          T: Temporal[F]
+          T: Clock[F]
       ): F[(DataCache[F], A)] =
         for {
           cache  <- ref[F, DataCache[F]](cache)
@@ -526,7 +526,7 @@ object `package` {
           fa: Fetch[F, A]
       )(implicit
           C: Concurrent[F],
-          T: Temporal[F]
+          T: Clock[F]
       ): F[(Log, DataCache[F], A)] =
         apply(fa, InMemoryCache.empty[F])
 
@@ -535,7 +535,7 @@ object `package` {
           cache: DataCache[F]
       )(implicit
           C: Concurrent[F],
-          T: Temporal[F]
+          T: Clock[F]
       ): F[(Log, DataCache[F], A)] =
         for {
           logAndCache <- (ref[F, Log](FetchLog()), ref[F, DataCache[F]](cache)).tupled
@@ -546,7 +546,7 @@ object `package` {
         } yield (e, c, result)
     }
 
-    private def ref[F[_]: Sync, A](a: A): F[Ref[F, A]] =
+    private def ref[F[_]: Concurrent, A](a: A): F[Ref[F, A]] =
       Ref.of[F, A](a)
 
     // Data fetching
@@ -557,7 +557,7 @@ object `package` {
         log: Option[Ref[F, Log]]
     )(implicit
         C: Concurrent[F],
-        T: Temporal[F]
+        T: Clock[F]
     ): F[A] =
       for {
         result <- fa.run
@@ -574,7 +574,7 @@ object `package` {
               .fold(
                 Applicative[F].pure(FetchLog(): Log)
               )(_.get)
-              .flatMap((e: Log) => Sync[F].raiseError[A](logToThrowable(e)))
+              .flatMap((e: Log) => Concurrent[F].raiseError[A](logToThrowable(e)))
         }
       } yield value
 
@@ -584,7 +584,7 @@ object `package` {
         log: Option[Ref[F, Log]]
     )(implicit
         C: Concurrent[F],
-        T: Temporal[F]
+        T: Clock[F]
     ): F[Unit] = {
       val blocked = rs.m.toList.map(_._2)
       if (blocked.isEmpty) Applicative[F].unit
@@ -616,7 +616,7 @@ object `package` {
         log: Option[Ref[F, Log]]
     )(implicit
         C: Concurrent[F],
-        T: Temporal[F]
+        T: Clock[F]
     ): F[List[Request]] =
       blocked.request match {
         case q: FetchOne[Any, Any] => runFetchOne[F](q, ds, blocked.result, cache, log)
@@ -632,7 +632,7 @@ object `package` {
       log: Option[Ref[F, Log]]
   )(implicit
       C: Concurrent[F],
-      T: Temporal[F]
+      T: Clock[F]
   ): F[List[Request]] =
     for {
       c           <- cache.get
@@ -644,9 +644,9 @@ object `package` {
         // Not cached, must fetch
         case None =>
           for {
-            startTime <- T.clock.monotonic(MILLISECONDS)
+            startTime <- T.monotonic.map(_.toMillis)
             o         <- ds.fetch(q.id)
-            endTime   <- T.clock.monotonic(MILLISECONDS)
+            endTime   <- T.monotonic.map(_.toMillis)
             result <- o match {
               // Fetched
               case Some(a) =>
@@ -678,7 +678,7 @@ object `package` {
       log: Option[Ref[F, Log]]
   )(implicit
       C: Concurrent[F],
-      T: Temporal[F]
+      T: Clock[F]
   ): F[List[Request]] =
     for {
       c <- cache.get
@@ -697,7 +697,7 @@ object `package` {
         // Some uncached
         case Some(uncached) =>
           for {
-            startTime <- T.clock.monotonic(MILLISECONDS)
+            startTime <- T.monotonic.map(_.toMillis)
 
             request = Batch[Any, Any](uncached, q.data)
 
@@ -711,7 +711,7 @@ object `package` {
                 runBatchedRequest[F](request, ds, batchSize, ds.batchExecution)
             }
 
-            endTime <- T.clock.monotonic(MILLISECONDS)
+            endTime <- T.monotonic.map(_.toMillis)
             resultMap = combineBatchResults(batchedRequest.results, cachedResults)
 
             updatedCache <- c.bulkInsert(batchedRequest.results.toList, q.data)
@@ -730,7 +730,7 @@ object `package` {
       e: BatchExecution
   )(implicit
       C: Concurrent[F],
-      T: Temporal[F]
+      T: Clock[F]
   ): F[BatchedRequest] = {
     val batches = NonEmptyList.fromListUnsafe(
       q.ids.toList
